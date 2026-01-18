@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Structuring settings
     max_tokens: int = 2000
 
+    # Response format
+    is_compact_answer: bool = True
+
     class Config:
         env_file = ".env"
 
