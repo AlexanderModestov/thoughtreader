@@ -46,6 +46,7 @@ class Task(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("notes.id"), nullable=True)
 
     title: Mapped[str] = mapped_column(String(500))
     priority: Mapped[str] = mapped_column(String(20), default="medium")  # low/medium/high/urgent
@@ -61,6 +62,7 @@ class Task(Base):
     # Relationships
     user: Mapped["User"] = relationship(back_populates="tasks")
     project: Mapped[Optional["Project"]] = relationship(back_populates="tasks")
+    source_note: Mapped[Optional["Note"]] = relationship("Note", back_populates="extracted_tasks")
 
 
 class Note(Base):
@@ -84,6 +86,8 @@ class Note(Base):
     # Relationships
     user: Mapped["User"] = relationship(back_populates="notes")
     project: Mapped[Optional["Project"]] = relationship(back_populates="notes")
+    extracted_tasks: Mapped[list["Task"]] = relationship("Task", back_populates="source_note")
+    extracted_meetings: Mapped[list["Meeting"]] = relationship("Meeting", back_populates="source_note")
 
 
 class Meeting(Base):
@@ -91,6 +95,7 @@ class Meeting(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("notes.id"), nullable=True)
 
     title: Mapped[str] = mapped_column(String(500))
     participants: Mapped[str] = mapped_column(Text, default="")  # comma-separated
@@ -107,3 +112,4 @@ class Meeting(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="meetings")
+    source_note: Mapped[Optional["Note"]] = relationship("Note", back_populates="extracted_meetings")
