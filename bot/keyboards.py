@@ -31,6 +31,13 @@ def note_actions_keyboard(note_id: int, has_voice: bool) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
+def open_note_keyboard(note_id: int) -> InlineKeyboardMarkup:
+    """Button to open full note."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Open note", callback_data=f"note:view:{note_id}")]
+    ])
+
+
 def meeting_actions_keyboard(meeting_id: int, has_voice: bool) -> InlineKeyboardMarkup:
     """Actions with meeting."""
     buttons = []
