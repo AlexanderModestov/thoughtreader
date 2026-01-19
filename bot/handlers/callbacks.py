@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
 from bot.handlers import meeting, note, project, task, voice
-from bot.keyboards import meeting_actions_keyboard
+from bot.keyboards import meeting_actions_keyboard, note_actions_keyboard
 
 router = Router()
 
@@ -111,6 +111,20 @@ async def handle_note_callback(callback: CallbackQuery, bot: Bot):
     """Handle note-related callbacks."""
     parts = callback.data.split(":")
     action = parts[1]
+
+    if action == "view":
+        note_id = int(parts[2]) if len(parts) > 2 else 0
+        n = await note.get_note(note_id)
+        if n:
+            text = n.raw_transcript or n.content
+            await callback.message.answer(
+                f"📄 *Full transcription:*\n\n{text}",
+                reply_markup=note_actions_keyboard(n.id, has_voice=bool(n.voice_file_id))
+            )
+            await callback.answer()
+        else:
+            await callback.answer("Note not found", show_alert=True)
+        return
 
     if action == "replay":
         note_id = int(parts[2]) if len(parts) > 2 else 0
