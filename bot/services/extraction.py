@@ -24,7 +24,7 @@ def _get_client() -> AsyncAnthropic:
 class ExtractedTask:
     title: str
     priority: str = "medium"
-    due_date: str | None = None
+    due_date: date | None = None
 
 
 @dataclass
@@ -125,7 +125,7 @@ async def extract_from_message(text: str) -> ExtractionResult:
         ExtractedTask(
             title=t["title"],
             priority=t.get("priority", "medium"),
-            due_date=t.get("due_date")
+            due_date=date.fromisoformat(t["due_date"]) if t.get("due_date") else None
         )
         for t in data.get("tasks", [])
     ]
