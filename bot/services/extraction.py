@@ -43,7 +43,10 @@ class ExtractionResult:
     meetings: list[ExtractedMeeting] = field(default_factory=list)
 
 
-EXTRACTION_PROMPT = """You are an assistant that processes voice transcriptions. Analyze the text and:
+EXTRACTION_PROMPT = """You are an assistant that processes voice transcriptions.
+IMPORTANT: Respond in the SAME LANGUAGE as the input text.
+
+Analyze the text and:
 
 1. CLEAN: Remove filler words (um, uh, like, you know), false starts, and off-topic content
 2. SUMMARIZE: Create a 1-2 sentence summary of the core content
@@ -101,7 +104,7 @@ async def extract_from_message(text: str) -> ExtractionResult:
     logger.info(f"Extracting from text, length: {len(text)}")
 
     response = await client.messages.create(
-        model="claude-3-haiku-20240307",
+        model=settings.anthropic_model,
         max_tokens=settings.max_tokens,
         messages=[{"role": "user", "content": prompt}]
     )

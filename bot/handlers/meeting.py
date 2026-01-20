@@ -32,6 +32,47 @@ async def handle_command(message: Message, state: FSMContext):
     await message.answer("Send a voice message or text about the meeting")
 
 
+@router.message(Command("meetings"))
+async def handle_list(message: Message):
+    """Handle /meetings command - show all meetings."""
+    telegram_user = message.from_user
+
+    async with get_session() as db:
+        # Get user
+        result = await db.execute(
+            select(User).where(User.telegram_id == telegram_user.id)
+        )
+        user = result.scalar()
+
+        if not user:
+            await message.answer("Please start the bot with /start first.")
+            return
+
+        # Get all meetings
+        meetings_result = await db.execute(
+            select(Meeting)
+            .where(Meeting.user_id == user.id)
+            .order_by(Meeting.created_at.desc())
+            .limit(20)
+        )
+        meetings = list(meetings_result.scalars().all())
+
+        if not meetings:
+            await message.answer("No meetings yet. Use /meet to create one!")
+            return
+
+        lines = ["*Your meetings:*\n"]
+
+        for m in meetings:
+            participants = m.participants if m.participants else "Not specified"
+            date_str = m.created_at.strftime("%d.%m.%Y")
+            lines.append(f"*{m.title}*")
+            lines.append(f"   Participants: {participants}")
+            lines.append(f"   Created: {date_str}\n")
+
+        await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
 async def process_meeting(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None, voice_duration: int = None):
     """Process text as a meeting."""
     # Structure via Claude
