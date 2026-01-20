@@ -49,14 +49,24 @@ async def handle_tasks_callback(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("task:"))
 async def handle_task_callback(callback: CallbackQuery):
     """Handle single task callbacks."""
+    from bot.keyboards import tasks_list_keyboard
+
     parts = callback.data.split(":")
     action = parts[1]
 
     if action in ("done", "toggle"):
         task_id = int(parts[2]) if len(parts) > 2 else 0
         is_done = await task.toggle_task(task_id)
-        status = "completed" if is_done else "marked pending"
-        await callback.answer(f"Task {status}!")
+
+        # Refresh task list
+        user_id = await task.get_task_user_id(task_id)
+        if user_id:
+            tasks, done_tasks = await task.get_tasks_data(user_id)
+            text = task.format_tasks_text(tasks, done_tasks)
+            keyboard = tasks_list_keyboard(tasks) if tasks else None
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+        await callback.answer("Выполнено!" if is_done else "Восстановлено")
 
 
 @router.callback_query(F.data.startswith("meeting:"))

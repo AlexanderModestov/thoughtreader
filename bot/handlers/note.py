@@ -47,6 +47,46 @@ async def handle_command(message: Message, state: FSMContext):
     await message.answer("Send a voice message or text for the note")
 
 
+@router.message(Command("notes"))
+async def handle_list(message: Message):
+    """Handle /notes command - show all notes."""
+    telegram_user = message.from_user
+
+    async with get_session() as db:
+        # Get user
+        result = await db.execute(
+            select(User).where(User.telegram_id == telegram_user.id)
+        )
+        user = result.scalar()
+
+        if not user:
+            await message.answer("Please start the bot with /start first.")
+            return
+
+        # Get all notes
+        notes_result = await db.execute(
+            select(Note)
+            .where(Note.user_id == user.id)
+            .order_by(Note.created_at.desc())
+            .limit(20)
+        )
+        notes = list(notes_result.scalars().all())
+
+        if not notes:
+            await message.answer("Заметок пока нет. Отправьте голосовое или текст!")
+            return
+
+        lines = ["*Ваши заметки:*\n"]
+
+        for n in notes:
+            date_str = n.created_at.strftime("%d.%m.%Y")
+            title = n.title if n.title else n.content[:50] + "..."
+            lines.append(f"*{title}*")
+            lines.append(f"   {date_str}\n")
+
+        await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
 async def process_note(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None, voice_duration: int = None):
     """Process text as a note and save immediately."""
     # Structure via Claude

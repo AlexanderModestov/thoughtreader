@@ -9,7 +9,7 @@ from aiogram.types import Message
 from sqlalchemy import select
 
 from bot.database import get_session
-from bot.keyboards import confirm_keyboard
+from bot.keyboards import confirm_keyboard, tasks_list_keyboard
 from bot.models import Project, Task, User
 from bot.services.structuring import structure
 
@@ -53,6 +53,63 @@ async def handle_command(message: Message, state: FSMContext):
     await message.answer("Send a voice message or text with tasks")
 
 
+async def get_tasks_data(user_id: int) -> tuple[list[Task], list[Task]]:
+    """Get pending and completed today tasks for user."""
+    async with get_session() as db:
+        # Get pending tasks
+        tasks_result = await db.execute(
+            select(Task)
+            .where(Task.user_id == user_id)
+            .where(Task.is_done == False)
+            .order_by(Task.due_date.asc().nullslast(), Task.created_at.desc())
+            .limit(20)
+        )
+        tasks = list(tasks_result.scalars().all())
+
+        # Get completed today
+        today = date.today()
+        done_result = await db.execute(
+            select(Task)
+            .where(Task.user_id == user_id)
+            .where(Task.is_done == True)
+        )
+        done_tasks = [t for t in done_result.scalars() if t.created_at.date() == today]
+
+        return tasks, done_tasks
+
+
+def format_tasks_text(tasks: list[Task], done_tasks: list[Task]) -> str:
+    """Format tasks list as text."""
+    priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+    lines = ["📋 *Ваши задачи*\n"]
+
+    # Urgent tasks
+    urgent = [t for t in tasks if t.priority == "urgent"]
+    if urgent:
+        lines.append("*Срочные:*")
+        for t in urgent:
+            due = f" — {t.due_date}" if t.due_date else ""
+            lines.append(f"🔴 ☐ {t.title}{due}")
+        lines.append("")
+
+    # Other tasks
+    other = [t for t in tasks if t.priority != "urgent"]
+    if other:
+        for t in other:
+            due = f" — {t.due_date}" if t.due_date else ""
+            lines.append(f"☐ {t.title}{due}")
+        lines.append("")
+
+    # Completed today
+    if done_tasks:
+        for t in done_tasks:
+            lines.append(f"~{t.title}~")
+        lines.append("")
+        lines.append(f"✅ *Выполнено сегодня:* {len(done_tasks)}")
+
+    return "\n".join(lines)
+
+
 @router.message(Command("tasks"))
 async def handle_list(message: Message):
     """Handle /tasks command - show task list."""
@@ -69,56 +126,16 @@ async def handle_list(message: Message):
             await message.answer("Please start the bot with /start first.")
             return
 
-        # Get pending tasks
-        tasks_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user.id)
-            .where(Task.is_done == False)
-            .order_by(Task.due_date.asc().nullslast(), Task.created_at.desc())
-            .limit(20)
-        )
-        tasks = list(tasks_result.scalars().all())
-
-        # Get completed today
-        today = date.today()
-        done_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user.id)
-            .where(Task.is_done == True)
-        )
-        done_tasks = [t for t in done_result.scalars() if t.created_at.date() == today]
+        tasks, done_tasks = await get_tasks_data(user.id)
 
         if not tasks and not done_tasks:
-            await message.answer("📋 No tasks yet. Use /task to create some!")
+            await message.answer("📋 Задач пока нет. Используйте /task для создания!")
             return
 
-        priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-        lines = ["📋 *Your tasks*\n"]
+        text = format_tasks_text(tasks, done_tasks)
+        keyboard = tasks_list_keyboard(tasks) if tasks else None
 
-        # Urgent tasks
-        urgent = [t for t in tasks if t.priority == "urgent"]
-        if urgent:
-            lines.append("*Urgent:*")
-            for t in urgent:
-                due = f" — {t.due_date}" if t.due_date else ""
-                lines.append(f"🔴 ☐ {t.title}{due}")
-            lines.append("")
-
-        # Other tasks
-        other = [t for t in tasks if t.priority != "urgent"]
-        if other:
-            lines.append("*Other:*")
-            for t in other:
-                emoji = priority_emoji.get(t.priority, "🟡")
-                due = f" — {t.due_date}" if t.due_date else ""
-                lines.append(f"☐ {t.title}{due}")
-            lines.append("")
-
-        # Completed today
-        if done_tasks:
-            lines.append(f"✅ *Completed today:* {len(done_tasks)}")
-
-        await message.answer("\n".join(lines))
+        await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def process_tasks(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None):
@@ -223,3 +240,10 @@ async def toggle_task(task_id: int) -> bool:
             await db.commit()
             return task.is_done
     return False
+
+
+async def get_task_user_id(task_id: int) -> int | None:
+    """Get user_id by task_id."""
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        return task.user_id if task else None
