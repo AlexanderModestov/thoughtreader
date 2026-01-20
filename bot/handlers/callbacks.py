@@ -18,17 +18,17 @@ async def handle_tasks_callback(callback: CallbackQuery):
         batch_id = parts[2] if len(parts) > 2 else ""
         count = await task.save_tasks(batch_id)
         if count:
-            await callback.answer("Saved!")
+            await callback.answer("Сохранено!")
             await callback.message.edit_text(
-                f"✅ {count} tasks saved!\n\n/tasks — view all tasks"
+                f"✅ Сохранено {count} задач!\n\n/tasks — посмотреть все задачи"
             )
         else:
-            await callback.answer("Tasks not found or already saved.", show_alert=True)
+            await callback.answer("Задачи не найдены или уже сохранены.", show_alert=True)
     elif action == "cancel":
         batch_id = parts[2] if len(parts) > 2 else ""
         await task.cancel_tasks(batch_id)
-        await callback.answer("Cancelled")
-        await callback.message.edit_text("Cancelled")
+        await callback.answer("Отменено")
+        await callback.message.edit_text("🗑 Отменено")
 
 
 @router.callback_query(F.data.startswith("task:"))
@@ -49,9 +49,9 @@ async def handle_task_callback(callback: CallbackQuery):
             tasks, done_tasks = await task.get_tasks_data(user_id)
             text = task.format_tasks_text(tasks, done_tasks)
             keyboard = tasks_list_keyboard(tasks) if tasks else None
-            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-        await callback.answer("Done!" if is_done else "Restored")
+        await callback.answer("Выполнено!" if is_done else "Восстановлено")
 
 
 @router.callback_query(F.data.startswith("meeting:"))

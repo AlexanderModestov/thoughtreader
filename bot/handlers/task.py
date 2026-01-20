@@ -46,7 +46,7 @@ def get_user_projects(user_id: int) -> list[dict]:
 async def handle_command(message: Message, state: FSMContext):
     """Handle /task command - wait for voice or text."""
     await state.set_state(TaskStates.waiting_for_task_input)
-    await message.answer("Send a voice message or text with tasks")
+    await message.answer("Отправьте голосовое сообщение или текст с задачами")
 
 
 async def get_tasks_data(user_id: int) -> tuple[list[dict], list[dict]]:
@@ -64,33 +64,34 @@ async def get_tasks_data(user_id: int) -> tuple[list[dict], list[dict]]:
 
 
 def format_tasks_text(tasks: list[dict], done_tasks: list[dict]) -> str:
-    """Format tasks list as text."""
+    """Format tasks list as text (HTML format)."""
     priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-    lines = ["*Your tasks*\n"]
+    lines = ["<b>📋 Ваши задачи</b>\n"]
 
     # Urgent tasks
     urgent = [t for t in tasks if t.get("priority") == "urgent"]
     if urgent:
-        lines.append("*Urgent:*")
+        lines.append("<b>Срочные:</b>")
         for t in urgent:
-            due = f" - {t['due_date']}" if t.get("due_date") else ""
-            lines.append(f"🔴 {t['title']}{due}")
+            due = f" · {t['due_date']}" if t.get("due_date") else ""
+            lines.append(f"🔴 ☐ {t['title']}{due}")
         lines.append("")
 
-    # Other tasks
+    # Other tasks - each on separate line
     other = [t for t in tasks if t.get("priority") != "urgent"]
     if other:
         for t in other:
-            due = f" - {t['due_date']}" if t.get("due_date") else ""
-            lines.append(f"{t['title']}{due}")
+            emoji = priority_emoji.get(t.get("priority", "medium"), "🟡")
+            due = f" · {t['due_date']}" if t.get("due_date") else ""
+            lines.append(f"{emoji} ☐ {t['title']}{due}")
         lines.append("")
 
-    # Completed today
+    # Completed today - with proper strikethrough
     if done_tasks:
+        lines.append("<b>Выполнено сегодня:</b>")
         for t in done_tasks:
-            lines.append(f"~{t['title']}~")
+            lines.append(f"✅ <s>{t['title']}</s>")
         lines.append("")
-        lines.append(f"*Completed today:* {len(done_tasks)}")
 
     return "\n".join(lines)
 
@@ -111,13 +112,13 @@ async def handle_list(message: Message):
     tasks, done_tasks = await get_tasks_data(user["id"])
 
     if not tasks and not done_tasks:
-        await message.answer("No tasks yet. Use /task to create one!")
+        await message.answer("Задач пока нет. Используйте /task для создания!")
         return
 
     text = format_tasks_text(tasks, done_tasks)
     keyboard = tasks_list_keyboard(tasks) if tasks else None
 
-    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 async def process_tasks(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None):
@@ -130,7 +131,7 @@ async def process_tasks(message: Message, text: str, user_id: int, state: FSMCon
         return
 
     if not result:
-        await message.answer("No tasks found in the message.")
+        await message.answer("Задачи не найдены в сообщении.")
         return
 
     # Get user
@@ -161,15 +162,15 @@ async def process_tasks(message: Message, text: str, user_id: int, state: FSMCon
     }
 
     # Format response
-    lines = [f"*Found {len(tasks_data)} tasks:*\n"]
+    lines = [f"✅ *Найдено {len(tasks_data)} задач:*\n"]
 
     priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
 
     for i, t in enumerate(tasks_data, 1):
         emoji = priority_emoji.get(t.get("priority", "medium"), "🟡")
-        due = f" | {t['due_date']}" if t.get("due_date") else ""
+        due = f" · {t['due_date']}" if t.get("due_date") else ""
         lines.append(f"{i}. {t['title']}")
-        lines.append(f"   {t['project_name']} | {emoji}{due}\n")
+        lines.append(f"   📁 {t['project_name']} · {emoji}{due}\n")
 
     await state.clear()
     await message.answer(
