@@ -10,7 +10,7 @@ class Base(DeclarativeBase):
 
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = "tr_users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
@@ -25,10 +25,10 @@ class User(Base):
 
 
 class Project(Base):
-    __tablename__ = "projects"
+    __tablename__ = "tr_projects"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("tr_users.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     keywords: Mapped[str] = mapped_column(Text, default="")  # comma-separated
     is_default: Mapped[bool] = mapped_column(default=False)  # "Inbox"
@@ -41,12 +41,12 @@ class Project(Base):
 
 
 class Task(Base):
-    __tablename__ = "tasks"
+    __tablename__ = "tr_tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("projects.id"), nullable=True)
-    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("notes.id"), nullable=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("tr_users.id"), index=True)
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tr_projects.id"), nullable=True)
+    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tr_notes.id"), nullable=True)
 
     title: Mapped[str] = mapped_column(String(500))
     priority: Mapped[str] = mapped_column(String(20), default="medium")  # low/medium/high/urgent
@@ -66,11 +66,11 @@ class Task(Base):
 
 
 class Note(Base):
-    __tablename__ = "notes"
+    __tablename__ = "tr_notes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("tr_users.id"), index=True)
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tr_projects.id"), nullable=True)
 
     title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     content: Mapped[str] = mapped_column(Text)
@@ -91,11 +91,11 @@ class Note(Base):
 
 
 class Meeting(Base):
-    __tablename__ = "meetings"
+    __tablename__ = "tr_meetings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("notes.id"), nullable=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("tr_users.id"), index=True)
+    source_note_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tr_notes.id"), nullable=True)
 
     title: Mapped[str] = mapped_column(String(500))
     participants: Mapped[str] = mapped_column(Text, default="")  # comma-separated

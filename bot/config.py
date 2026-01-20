@@ -14,8 +14,9 @@ class Settings(BaseSettings):
     whisper_model: str = "whisper-1"
     whisper_language: str = "ru"
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///./data/bot.db"
+    # Supabase
+    supabase_url: str
+    supabase_key: str
 
     # Structuring settings
     max_tokens: int = 2000
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

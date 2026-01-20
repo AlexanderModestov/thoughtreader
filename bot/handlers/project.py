@@ -3,11 +3,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from sqlalchemy import func, select
 
-from bot.database import get_session
+from bot.database import supabase
 from bot.keyboards import projects_keyboard
-from bot.models import Project, Task, User
 
 router = Router()
 
@@ -16,12 +14,10 @@ class ProjectStates(StatesGroup):
     waiting_for_project_input = State()
 
 
-async def get_user_projects(db, user_id: int) -> list[Project]:
+def get_user_projects(user_id: int) -> list[dict]:
     """Get all projects for user."""
-    result = await db.execute(
-        select(Project).where(Project.user_id == user_id).order_by(Project.is_default.desc(), Project.name)
-    )
-    return list(result.scalars().all())
+    result = supabase.table("tr_projects").select("*").eq("user_id", user_id).order("is_default", desc=True).order("name").execute()
+    return result.data
 
 
 @router.message(Command("projects"))
@@ -29,47 +25,41 @@ async def handle_list(message: Message):
     """Handle /projects command."""
     telegram_user = message.from_user
 
-    async with get_session() as db:
-        # Get user
-        result = await db.execute(
-            select(User).where(User.telegram_id == telegram_user.id)
-        )
-        user = result.scalar()
+    # Get user
+    result = supabase.table("tr_users").select("*").eq("telegram_id", telegram_user.id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        # Get projects with task counts
-        projects = await get_user_projects(db, user.id)
+    user = result.data[0]
 
-        lines = ["📁 *Your projects*\n"]
+    # Get projects
+    projects = get_user_projects(user["id"])
 
-        for project in projects:
-            # Count tasks for this project
-            task_count_result = await db.execute(
-                select(func.count(Task.id))
-                .where(Task.project_id == project.id)
-                .where(Task.is_done == False)
-            )
-            task_count = task_count_result.scalar() or 0
+    lines = ["*Your projects*\n"]
 
-            if project.is_default:
-                emoji = "📥"
-            else:
-                emoji = "📁"
+    for project in projects:
+        # Count tasks for this project
+        task_count_result = supabase.table("tr_tasks").select("id", count="exact").eq("project_id", project["id"]).eq("is_done", False).execute()
+        task_count = task_count_result.count or 0
 
-            lines.append(f"{emoji} *{project.name}* ({task_count} tasks)")
+        if project.get("is_default"):
+            emoji = "📥"
+        else:
+            emoji = "📁"
 
-            if project.keywords:
-                lines.append(f"   Keywords: {project.keywords}\n")
-            else:
-                lines.append("")
+        lines.append(f"{emoji} *{project['name']}* ({task_count} tasks)")
 
-        await message.answer(
-            "\n".join(lines),
-            reply_markup=projects_keyboard()
-        )
+        if project.get("keywords"):
+            lines.append(f"   Keywords: {project['keywords']}\n")
+        else:
+            lines.append("")
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=projects_keyboard()
+    )
 
 
 async def start_new_project(message: Message, state: FSMContext):
@@ -96,26 +86,22 @@ async def process_new_project(message: Message, state: FSMContext):
         await message.answer("Please provide a project name.")
         return
 
-    async with get_session() as db:
-        # Get user
-        result = await db.execute(
-            select(User).where(User.telegram_id == telegram_user.id)
-        )
-        user = result.scalar()
+    # Get user
+    result = supabase.table("tr_users").select("*").eq("telegram_id", telegram_user.id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        # Create project
-        project = Project(
-            user_id=user.id,
-            name=name,
-            keywords=keywords,
-            is_default=False
-        )
-        db.add(project)
-        await db.commit()
+    user = result.data[0]
+
+    # Create project
+    supabase.table("tr_projects").insert({
+        "user_id": user["id"],
+        "name": name,
+        "keywords": keywords,
+        "is_default": False
+    }).execute()
 
     await state.clear()
-    await message.answer(f"✅ Project \"{name}\" created!")
+    await message.answer(f"Project \"{name}\" created!")

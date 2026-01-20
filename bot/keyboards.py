@@ -54,17 +54,17 @@ def task_done_keyboard(task_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def tasks_list_keyboard(tasks: list) -> InlineKeyboardMarkup:
+def tasks_list_keyboard(tasks: list[dict]) -> InlineKeyboardMarkup:
     """Inline buttons for pending tasks."""
     buttons = []
     for t in tasks:
-        if t.is_done:
+        if t.get("is_done"):
             continue
-        title = t.title[:25] + "…" if len(t.title) > 25 else t.title
+        title = t["title"][:25] + "…" if len(t["title"]) > 25 else t["title"]
         buttons.append([
             InlineKeyboardButton(
                 text=f"✓ {title}",
-                callback_data=f"task:toggle:{t.id}"
+                callback_data=f"task:toggle:{t['id']}"
             )
         ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)

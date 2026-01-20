@@ -1,16 +1,14 @@
 import uuid
 from datetime import date
 
-from aiogram import Bot, Router
+from aiogram import Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from sqlalchemy import select
 
-from bot.database import get_session
+from bot.database import supabase
 from bot.keyboards import confirm_keyboard, tasks_list_keyboard
-from bot.models import Project, Task, User
 from bot.services.structuring import structure
 
 router = Router()
@@ -23,14 +21,14 @@ class TaskStates(StatesGroup):
     waiting_for_task_input = State()
 
 
-def detect_project(text: str, projects: list[Project]) -> Project | None:
+def detect_project(text: str, projects: list[dict]) -> dict | None:
     """Simple keyword matching for project detection."""
     text_lower = text.lower()
 
     for project in projects:
-        if not project.keywords:
+        if not project.get("keywords"):
             continue
-        keywords = [k.strip() for k in project.keywords.split(",")]
+        keywords = [k.strip() for k in project["keywords"].split(",")]
         for keyword in keywords:
             if keyword and keyword.lower() in text_lower:
                 return project
@@ -38,12 +36,10 @@ def detect_project(text: str, projects: list[Project]) -> Project | None:
     return None  # Will go to "Inbox"
 
 
-async def get_user_projects(db, user_id: int) -> list[Project]:
+def get_user_projects(user_id: int) -> list[dict]:
     """Get all projects for user."""
-    result = await db.execute(
-        select(Project).where(Project.user_id == user_id).order_by(Project.is_default.desc(), Project.name)
-    )
-    return list(result.scalars().all())
+    result = supabase.table("tr_projects").select("*").eq("user_id", user_id).order("is_default", desc=True).order("name").execute()
+    return result.data
 
 
 @router.message(Command("task"))
@@ -53,59 +49,48 @@ async def handle_command(message: Message, state: FSMContext):
     await message.answer("Send a voice message or text with tasks")
 
 
-async def get_tasks_data(user_id: int) -> tuple[list[Task], list[Task]]:
+async def get_tasks_data(user_id: int) -> tuple[list[dict], list[dict]]:
     """Get pending and completed today tasks for user."""
-    async with get_session() as db:
-        # Get pending tasks
-        tasks_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user_id)
-            .where(Task.is_done == False)
-            .order_by(Task.due_date.asc().nullslast(), Task.created_at.desc())
-            .limit(20)
-        )
-        tasks = list(tasks_result.scalars().all())
+    # Get pending tasks
+    tasks_result = supabase.table("tr_tasks").select("*").eq("user_id", user_id).eq("is_done", False).order("due_date", nullsfirst=False).order("created_at", desc=True).limit(20).execute()
+    tasks = tasks_result.data
 
-        # Get completed today
-        today = date.today()
-        done_result = await db.execute(
-            select(Task)
-            .where(Task.user_id == user_id)
-            .where(Task.is_done == True)
-        )
-        done_tasks = [t for t in done_result.scalars() if t.created_at.date() == today]
+    # Get completed today
+    today = date.today().isoformat()
+    done_result = supabase.table("tr_tasks").select("*").eq("user_id", user_id).eq("is_done", True).gte("created_at", today).execute()
+    done_tasks = done_result.data
 
-        return tasks, done_tasks
+    return tasks, done_tasks
 
 
-def format_tasks_text(tasks: list[Task], done_tasks: list[Task]) -> str:
+def format_tasks_text(tasks: list[dict], done_tasks: list[dict]) -> str:
     """Format tasks list as text."""
     priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-    lines = ["📋 *Ваши задачи*\n"]
+    lines = ["*Your tasks*\n"]
 
     # Urgent tasks
-    urgent = [t for t in tasks if t.priority == "urgent"]
+    urgent = [t for t in tasks if t.get("priority") == "urgent"]
     if urgent:
-        lines.append("*Срочные:*")
+        lines.append("*Urgent:*")
         for t in urgent:
-            due = f" — {t.due_date}" if t.due_date else ""
-            lines.append(f"🔴 ☐ {t.title}{due}")
+            due = f" - {t['due_date']}" if t.get("due_date") else ""
+            lines.append(f"🔴 {t['title']}{due}")
         lines.append("")
 
     # Other tasks
-    other = [t for t in tasks if t.priority != "urgent"]
+    other = [t for t in tasks if t.get("priority") != "urgent"]
     if other:
         for t in other:
-            due = f" — {t.due_date}" if t.due_date else ""
-            lines.append(f"☐ {t.title}{due}")
+            due = f" - {t['due_date']}" if t.get("due_date") else ""
+            lines.append(f"{t['title']}{due}")
         lines.append("")
 
     # Completed today
     if done_tasks:
         for t in done_tasks:
-            lines.append(f"~{t.title}~")
+            lines.append(f"~{t['title']}~")
         lines.append("")
-        lines.append(f"✅ *Выполнено сегодня:* {len(done_tasks)}")
+        lines.append(f"*Completed today:* {len(done_tasks)}")
 
     return "\n".join(lines)
 
@@ -115,27 +100,24 @@ async def handle_list(message: Message):
     """Handle /tasks command - show task list."""
     telegram_user = message.from_user
 
-    async with get_session() as db:
-        # Get user
-        result = await db.execute(
-            select(User).where(User.telegram_id == telegram_user.id)
-        )
-        user = result.scalar()
+    # Get user
+    result = supabase.table("tr_users").select("*").eq("telegram_id", telegram_user.id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        tasks, done_tasks = await get_tasks_data(user.id)
+    user = result.data[0]
+    tasks, done_tasks = await get_tasks_data(user["id"])
 
-        if not tasks and not done_tasks:
-            await message.answer("📋 Задач пока нет. Используйте /task для создания!")
-            return
+    if not tasks and not done_tasks:
+        await message.answer("No tasks yet. Use /task to create one!")
+        return
 
-        text = format_tasks_text(tasks, done_tasks)
-        keyboard = tasks_list_keyboard(tasks) if tasks else None
+    text = format_tasks_text(tasks, done_tasks)
+    keyboard = tasks_list_keyboard(tasks) if tasks else None
 
-        await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 async def process_tasks(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None):
@@ -151,27 +133,24 @@ async def process_tasks(message: Message, text: str, user_id: int, state: FSMCon
         await message.answer("No tasks found in the message.")
         return
 
-    # Get user and projects
-    async with get_session() as db:
-        user_result = await db.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = user_result.scalar()
+    # Get user
+    user_result = supabase.table("tr_users").select("*").eq("telegram_id", user_id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not user_result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        projects = await get_user_projects(db, user.id)
-        default_project = next((p for p in projects if p.is_default), None)
+    user = user_result.data[0]
+    projects = get_user_projects(user["id"])
+    default_project = next((p for p in projects if p.get("is_default")), None)
 
-        tasks_data = []
-        for task in result:
-            project = detect_project(task.get("title", ""), projects) or default_project
-            task["project_name"] = project.name if project else "Inbox"
-            task["project_id"] = project.id if project else None
-            task["user_id"] = user.id
-            tasks_data.append(task)
+    tasks_data = []
+    for task in result:
+        project = detect_project(task.get("title", ""), projects) or default_project
+        task["project_name"] = project["name"] if project else "Inbox"
+        task["project_id"] = project["id"] if project else None
+        task["user_id"] = user["id"]
+        tasks_data.append(task)
 
     # Store temporarily
     batch_id = str(uuid.uuid4())[:8]
@@ -182,15 +161,15 @@ async def process_tasks(message: Message, text: str, user_id: int, state: FSMCon
     }
 
     # Format response
-    lines = [f"✅ *Found {len(tasks_data)} tasks:*\n"]
+    lines = [f"*Found {len(tasks_data)} tasks:*\n"]
 
     priority_emoji = {"urgent": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
 
     for i, t in enumerate(tasks_data, 1):
         emoji = priority_emoji.get(t.get("priority", "medium"), "🟡")
-        due = f" · 📅 {t['due_date']}" if t.get("due_date") else ""
-        lines.append(f"{i}. ☐ {t['title']}")
-        lines.append(f"   📁 {t['project_name']} · {emoji}{due}\n")
+        due = f" | {t['due_date']}" if t.get("due_date") else ""
+        lines.append(f"{i}. {t['title']}")
+        lines.append(f"   {t['project_name']} | {emoji}{due}\n")
 
     await state.clear()
     await message.answer(
@@ -209,19 +188,18 @@ async def save_tasks(batch_id: str) -> int:
     raw_text = batch.get("raw_text")
     voice_file_id = batch.get("voice_file_id")
 
-    async with get_session() as db:
-        for task_data in tasks_data:
-            task = Task(
-                user_id=task_data["user_id"],
-                project_id=task_data.get("project_id"),
-                title=task_data["title"],
-                priority=task_data.get("priority", "medium"),
-                due_date=task_data.get("due_date"),
-                raw_text=raw_text,
-                voice_file_id=voice_file_id
-            )
-            db.add(task)
-        await db.commit()
+    for task_data in tasks_data:
+        task = {
+            "user_id": task_data["user_id"],
+            "project_id": task_data.get("project_id"),
+            "title": task_data["title"],
+            "priority": task_data.get("priority", "medium"),
+            "due_date": str(task_data["due_date"]) if task_data.get("due_date") else None,
+            "is_done": False,
+            "raw_text": raw_text,
+            "voice_file_id": voice_file_id
+        }
+        supabase.table("tr_tasks").insert(task).execute()
 
     return len(tasks_data)
 
@@ -233,17 +211,20 @@ async def cancel_tasks(batch_id: str):
 
 async def toggle_task(task_id: int) -> bool:
     """Toggle task completion status."""
-    async with get_session() as db:
-        task = await db.get(Task, task_id)
-        if task:
-            task.is_done = not task.is_done
-            await db.commit()
-            return task.is_done
-    return False
+    # Get current task
+    result = supabase.table("tr_tasks").select("is_done").eq("id", task_id).execute()
+    if not result.data:
+        return False
+
+    current_status = result.data[0]["is_done"]
+    new_status = not current_status
+
+    # Update task
+    supabase.table("tr_tasks").update({"is_done": new_status}).eq("id", task_id).execute()
+    return new_status
 
 
 async def get_task_user_id(task_id: int) -> int | None:
     """Get user_id by task_id."""
-    async with get_session() as db:
-        task = await db.get(Task, task_id)
-        return task.user_id if task else None
+    result = supabase.table("tr_tasks").select("user_id").eq("id", task_id).execute()
+    return result.data[0]["user_id"] if result.data else None

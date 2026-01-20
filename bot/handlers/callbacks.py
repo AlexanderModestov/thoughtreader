@@ -2,25 +2,10 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from bot.handlers import meeting, note, project, task, voice
+from bot.handlers import meeting, note, project, task
 from bot.keyboards import meeting_actions_keyboard, note_actions_keyboard
 
 router = Router()
-
-
-@router.callback_query(F.data.startswith("intent:"))
-async def handle_intent(callback: CallbackQuery, state: FSMContext):
-    """Handle intent selection from voice without command."""
-    user_id = callback.from_user.id
-    intent = callback.data.split(":")[1]
-
-    success = await voice.process_pending_transcript(user_id, intent, callback.message, state)
-    if success:
-        await callback.answer()
-        # Edit original message to remove buttons
-        await callback.message.edit_reply_markup(reply_markup=None)
-    else:
-        await callback.answer("Transcript expired. Please send again.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("tasks:"))
@@ -43,7 +28,7 @@ async def handle_tasks_callback(callback: CallbackQuery):
         batch_id = parts[2] if len(parts) > 2 else ""
         await task.cancel_tasks(batch_id)
         await callback.answer("Cancelled")
-        await callback.message.edit_text("🗑 Cancelled")
+        await callback.message.edit_text("Cancelled")
 
 
 @router.callback_query(F.data.startswith("task:"))
@@ -66,7 +51,7 @@ async def handle_task_callback(callback: CallbackQuery):
             keyboard = tasks_list_keyboard(tasks) if tasks else None
             await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
-        await callback.answer("Выполнено!" if is_done else "Восстановлено")
+        await callback.answer("Done!" if is_done else "Restored")
 
 
 @router.callback_query(F.data.startswith("meeting:"))
@@ -89,15 +74,15 @@ async def handle_meeting_callback(callback: CallbackQuery, bot: Bot):
         batch_id = parts[2] if len(parts) > 2 else ""
         await meeting.cancel_meeting(batch_id)
         await callback.answer("Cancelled")
-        await callback.message.edit_text("🗑 Cancelled")
+        await callback.message.edit_text("Cancelled")
     elif action == "replay":
         meeting_id = int(parts[2]) if len(parts) > 2 else 0
         m = await meeting.get_meeting(meeting_id)
-        if m and m.voice_file_id:
+        if m and m.get("voice_file_id"):
             await bot.send_voice(
                 chat_id=callback.message.chat.id,
-                voice=m.voice_file_id,
-                caption="🎙 Original recording"
+                voice=m["voice_file_id"],
+                caption="Original recording"
             )
             await callback.answer()
         else:
@@ -109,7 +94,7 @@ async def handle_meeting_callback(callback: CallbackQuery, bot: Bot):
             # Send agenda as plain text for easy copying
             await bot.send_message(
                 chat_id=callback.message.chat.id,
-                text=f"📋 {m.title}\n\n{m.agenda}"
+                text=f"{m['title']}\n\n{m['agenda']}"
             )
             await callback.answer("Copied!")
         else:
@@ -126,10 +111,10 @@ async def handle_note_callback(callback: CallbackQuery, bot: Bot):
         note_id = int(parts[2]) if len(parts) > 2 else 0
         n = await note.get_note(note_id)
         if n:
-            text = n.raw_transcript or n.content
+            text = n.get("raw_transcript") or n["content"]
             await callback.message.answer(
-                f"📄 *Full transcription:*\n\n{text}",
-                reply_markup=note_actions_keyboard(n.id, has_voice=bool(n.voice_file_id))
+                f"*Full transcription:*\n\n{text}",
+                reply_markup=note_actions_keyboard(n["id"], has_voice=bool(n.get("voice_file_id")))
             )
             await callback.answer()
         else:
@@ -139,11 +124,11 @@ async def handle_note_callback(callback: CallbackQuery, bot: Bot):
     if action == "replay":
         note_id = int(parts[2]) if len(parts) > 2 else 0
         n = await note.get_note(note_id)
-        if n and n.voice_file_id:
+        if n and n.get("voice_file_id"):
             await bot.send_voice(
                 chat_id=callback.message.chat.id,
-                voice=n.voice_file_id,
-                caption="🎙 Original recording"
+                voice=n["voice_file_id"],
+                caption="Original recording"
             )
             await callback.answer()
         else:
@@ -153,7 +138,7 @@ async def handle_note_callback(callback: CallbackQuery, bot: Bot):
         success = await note.delete_note(note_id)
         if success:
             await callback.answer("Deleted!")
-            await callback.message.edit_text("🗑 Note deleted")
+            await callback.message.edit_text("Note deleted")
         else:
             await callback.answer("Note not found", show_alert=True)
 

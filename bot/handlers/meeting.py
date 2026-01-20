@@ -1,4 +1,3 @@
-import logging
 import uuid
 
 from aiogram import Router
@@ -6,14 +5,10 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from sqlalchemy import select
 
-from bot.database import get_session
+from bot.database import supabase
 from bot.keyboards import confirm_keyboard, meeting_actions_keyboard
-from bot.models import Meeting, User
 from bot.services.structuring import structure
-
-logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -37,40 +32,33 @@ async def handle_list(message: Message):
     """Handle /meetings command - show all meetings."""
     telegram_user = message.from_user
 
-    async with get_session() as db:
-        # Get user
-        result = await db.execute(
-            select(User).where(User.telegram_id == telegram_user.id)
-        )
-        user = result.scalar()
+    # Get user
+    result = supabase.table("tr_users").select("*").eq("telegram_id", telegram_user.id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        # Get all meetings
-        meetings_result = await db.execute(
-            select(Meeting)
-            .where(Meeting.user_id == user.id)
-            .order_by(Meeting.created_at.desc())
-            .limit(20)
-        )
-        meetings = list(meetings_result.scalars().all())
+    user = result.data[0]
 
-        if not meetings:
-            await message.answer("No meetings yet. Use /meet to create one!")
-            return
+    # Get all meetings
+    meetings_result = supabase.table("tr_meetings").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20).execute()
+    meetings = meetings_result.data
 
-        lines = ["*Your meetings:*\n"]
+    if not meetings:
+        await message.answer("No meetings yet. Use /meet to create one!")
+        return
 
-        for m in meetings:
-            participants = m.participants if m.participants else "Not specified"
-            date_str = m.created_at.strftime("%d.%m.%Y")
-            lines.append(f"*{m.title}*")
-            lines.append(f"   Participants: {participants}")
-            lines.append(f"   Created: {date_str}\n")
+    lines = ["*Your meetings:*\n"]
 
-        await message.answer("\n".join(lines), parse_mode="Markdown")
+    for m in meetings:
+        participants = m.get("participants") or "Not specified"
+        date_str = m["created_at"][:10]  # YYYY-MM-DD
+        lines.append(f"*{m['title']}*")
+        lines.append(f"   Participants: {participants}")
+        lines.append(f"   Created: {date_str}\n")
+
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 async def process_meeting(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None, voice_duration: int = None):
@@ -83,20 +71,18 @@ async def process_meeting(message: Message, text: str, user_id: int, state: FSMC
         return
 
     # Get user
-    async with get_session() as db:
-        user_result = await db.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = user_result.scalar()
+    user_result = supabase.table("tr_users").select("*").eq("telegram_id", user_id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not user_result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
+
+    user = user_result.data[0]
 
     # Store temporarily
     batch_id = str(uuid.uuid4())[:8]
     pending_meetings[batch_id] = {
-        "user_id": user.id,
+        "user_id": user["id"],
         "title": result.get("title", "Meeting"),
         "participants": result.get("participants", []),
         "agenda": result.get("agenda", []),
@@ -113,10 +99,10 @@ async def process_meeting(message: Message, text: str, user_id: int, state: FSMC
     goal_str = result.get("goal") or "Not specified"
 
     response = (
-        f"📋 *{result.get('title', 'Meeting')}*\n\n"
-        f"👥 *Participants:* {participants_str}\n\n"
-        f"📝 *Agenda:*\n{agenda_str}\n\n"
-        f"🎯 *Goal:* {goal_str}"
+        f"*{result.get('title', 'Meeting')}*\n\n"
+        f"*Participants:* {participants_str}\n\n"
+        f"*Agenda:*\n{agenda_str}\n\n"
+        f"*Goal:* {goal_str}"
     )
 
     await state.clear()
@@ -136,22 +122,19 @@ async def save_meeting(batch_id: str) -> int | None:
 
     data = pending_meetings.pop(batch_id)
 
-    async with get_session() as db:
-        meeting = Meeting(
-            user_id=data["user_id"],
-            title=data["title"],
-            participants=", ".join(data["participants"]),
-            agenda="\n".join(f"- {item}" for item in data["agenda"]),
-            goal=data.get("goal"),
-            scheduled_at=data.get("scheduled_at"),
-            raw_transcript=data.get("raw_transcript"),
-            voice_file_id=data.get("voice_file_id"),
-            voice_duration=data.get("voice_duration")
-        )
-        db.add(meeting)
-        await db.commit()
-        await db.refresh(meeting)
-        return meeting.id
+    meeting_data = {
+        "user_id": data["user_id"],
+        "title": data["title"],
+        "participants": ", ".join(data["participants"]),
+        "agenda": "\n".join(f"- {item}" for item in data["agenda"]),
+        "goal": data.get("goal"),
+        "scheduled_at": data.get("scheduled_at"),
+        "raw_transcript": data.get("raw_transcript"),
+        "voice_file_id": data.get("voice_file_id"),
+        "voice_duration": data.get("voice_duration")
+    }
+    result = supabase.table("tr_meetings").insert(meeting_data).execute()
+    return result.data[0]["id"] if result.data else None
 
 
 async def cancel_meeting(batch_id: str):
@@ -159,18 +142,13 @@ async def cancel_meeting(batch_id: str):
     pending_meetings.pop(batch_id, None)
 
 
-async def get_meeting(meeting_id: int) -> Meeting | None:
+async def get_meeting(meeting_id: int) -> dict | None:
     """Get meeting by ID."""
-    async with get_session() as db:
-        return await db.get(Meeting, meeting_id)
+    result = supabase.table("tr_meetings").select("*").eq("id", meeting_id).execute()
+    return result.data[0] if result.data else None
 
 
 async def delete_meeting(meeting_id: int) -> bool:
     """Delete meeting by ID."""
-    async with get_session() as db:
-        meeting = await db.get(Meeting, meeting_id)
-        if meeting:
-            await db.delete(meeting)
-            await db.commit()
-            return True
-    return False
+    result = supabase.table("tr_meetings").delete().eq("id", meeting_id).execute()
+    return len(result.data) > 0 if result.data else False

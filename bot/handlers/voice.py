@@ -1,15 +1,13 @@
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
-from sqlalchemy import select
 
-from bot.database import get_session
+from bot.database import supabase
 from bot.handlers.meeting import MeetingStates
 from bot.handlers.note import NoteStates
 from bot.handlers.task import TaskStates
 from bot.handlers import meeting, note, task
 from bot.keyboards import open_note_keyboard
-from bot.models import Meeting, Note, Project, Task, User
 from bot.services.extraction import extract_from_message
 from bot.services.formatter import format_extraction_response
 from bot.services.transcription import transcribe
@@ -17,13 +15,13 @@ from bot.services.transcription import transcribe
 router = Router()
 
 
-def detect_project(text: str, projects: list[Project]) -> Project | None:
+def detect_project(text: str, projects: list[dict]) -> dict | None:
     """Simple keyword matching for project detection."""
     text_lower = text.lower()
     for project in projects:
-        if not project.keywords:
+        if not project.get("keywords"):
             continue
-        keywords = [k.strip() for k in project.keywords.split(",")]
+        keywords = [k.strip() for k in project["keywords"].split(",")]
         for keyword in keywords:
             if keyword and keyword.lower() in text_lower:
                 return project
@@ -39,75 +37,71 @@ async def process_auto_extraction(message: Message, text: str, user_id: int, voi
         await message.answer(f"Error processing: {str(e)}")
         return
 
-    async with get_session() as db:
-        # Get user
-        user_result = await db.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = user_result.scalar()
+    # Get user
+    user_result = supabase.table("tr_users").select("*").eq("telegram_id", user_id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not user_result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        # Get projects
-        projects_result = await db.execute(
-            select(Project).where(Project.user_id == user.id)
-        )
-        projects = list(projects_result.scalars().all())
-        default_project = next((p for p in projects if p.is_default), None)
+    user = user_result.data[0]
 
-        # Create note (always)
-        note_obj = Note(
-            user_id=user.id,
-            project_id=default_project.id if default_project else None,
-            title=result.summary[:100] if result.summary else None,
-            content=result.summary,
-            raw_transcript=text,
-            voice_file_id=voice_file_id,
-            voice_duration=voice_duration
-        )
-        db.add(note_obj)
-        await db.flush()  # Get note ID
+    # Get projects
+    projects_result = supabase.table("tr_projects").select("*").eq("user_id", user["id"]).execute()
+    projects = projects_result.data
+    default_project = next((p for p in projects if p.get("is_default")), None)
 
-        # Create tasks (if any)
-        for extracted_task in result.tasks:
-            project = detect_project(extracted_task.title, projects) or default_project
-            task_obj = Task(
-                user_id=user.id,
-                project_id=project.id if project else None,
-                source_note_id=note_obj.id,
-                title=extracted_task.title,
-                priority=extracted_task.priority,
-                due_date=extracted_task.due_date,
-                raw_text=text,
-                voice_file_id=voice_file_id
-            )
-            db.add(task_obj)
+    # Create note (always)
+    note_data = {
+        "user_id": user["id"],
+        "project_id": default_project["id"] if default_project else None,
+        "title": result.summary[:100] if result.summary else None,
+        "content": result.summary,
+        "tags": "",
+        "raw_transcript": text,
+        "voice_file_id": voice_file_id,
+        "voice_duration": voice_duration
+    }
+    note_result = supabase.table("tr_notes").insert(note_data).execute()
+    note_obj = note_result.data[0]
 
-        # Create meetings (if any)
-        for extracted_meeting in result.meetings:
-            meeting_obj = Meeting(
-                user_id=user.id,
-                source_note_id=note_obj.id,
-                title=extracted_meeting.title,
-                participants=", ".join(extracted_meeting.participants),
-                agenda="\n".join(f"- {item}" for item in extracted_meeting.agenda),
-                goal=extracted_meeting.goal,
-                raw_transcript=text,
-                voice_file_id=voice_file_id,
-                voice_duration=voice_duration
-            )
-            db.add(meeting_obj)
+    # Create tasks (if any)
+    for extracted_task in result.tasks:
+        project = detect_project(extracted_task.title, projects) or default_project
+        task_data = {
+            "user_id": user["id"],
+            "project_id": project["id"] if project else None,
+            "source_note_id": note_obj["id"],
+            "title": extracted_task.title,
+            "priority": extracted_task.priority,
+            "due_date": str(extracted_task.due_date) if extracted_task.due_date else None,
+            "is_done": False,
+            "raw_text": text,
+            "voice_file_id": voice_file_id
+        }
+        supabase.table("tr_tasks").insert(task_data).execute()
 
-        await db.commit()
+    # Create meetings (if any)
+    for extracted_meeting in result.meetings:
+        meeting_data = {
+            "user_id": user["id"],
+            "source_note_id": note_obj["id"],
+            "title": extracted_meeting.title,
+            "participants": ", ".join(extracted_meeting.participants),
+            "agenda": "\n".join(f"- {item}" for item in extracted_meeting.agenda),
+            "goal": extracted_meeting.goal,
+            "raw_transcript": text,
+            "voice_file_id": voice_file_id,
+            "voice_duration": voice_duration
+        }
+        supabase.table("tr_meetings").insert(meeting_data).execute()
 
-        # Format and send response
-        response = format_extraction_response(result, note_obj.id)
-        await message.answer(
-            response,
-            reply_markup=open_note_keyboard(note_obj.id)
-        )
+    # Format and send response
+    response = format_extraction_response(result, note_obj["id"])
+    await message.answer(
+        response,
+        reply_markup=open_note_keyboard(note_obj["id"])
+    )
 
 
 @router.message(F.voice)

@@ -3,11 +3,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from sqlalchemy import select
 
-from bot.database import get_session
+from bot.database import supabase
 from bot.keyboards import note_actions_keyboard
-from bot.models import Note, Project, User
 from bot.services.structuring import structure
 
 router = Router()
@@ -17,14 +15,14 @@ class NoteStates(StatesGroup):
     waiting_for_note_input = State()
 
 
-def detect_project(text: str, projects: list[Project]) -> Project | None:
+def detect_project(text: str, projects: list[dict]) -> dict | None:
     """Simple keyword matching for project detection."""
     text_lower = text.lower()
 
     for project in projects:
-        if not project.keywords:
+        if not project.get("keywords"):
             continue
-        keywords = [k.strip() for k in project.keywords.split(",")]
+        keywords = [k.strip() for k in project["keywords"].split(",")]
         for keyword in keywords:
             if keyword and keyword.lower() in text_lower:
                 return project
@@ -32,12 +30,10 @@ def detect_project(text: str, projects: list[Project]) -> Project | None:
     return None
 
 
-async def get_user_projects(db, user_id: int) -> list[Project]:
+def get_user_projects(user_id: int) -> list[dict]:
     """Get all projects for user."""
-    result = await db.execute(
-        select(Project).where(Project.user_id == user_id).order_by(Project.is_default.desc(), Project.name)
-    )
-    return list(result.scalars().all())
+    result = supabase.table("tr_projects").select("*").eq("user_id", user_id).order("is_default", desc=True).order("name").execute()
+    return result.data
 
 
 @router.message(Command("note"))
@@ -52,39 +48,32 @@ async def handle_list(message: Message):
     """Handle /notes command - show all notes."""
     telegram_user = message.from_user
 
-    async with get_session() as db:
-        # Get user
-        result = await db.execute(
-            select(User).where(User.telegram_id == telegram_user.id)
-        )
-        user = result.scalar()
+    # Get user
+    result = supabase.table("tr_users").select("*").eq("telegram_id", telegram_user.id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        # Get all notes
-        notes_result = await db.execute(
-            select(Note)
-            .where(Note.user_id == user.id)
-            .order_by(Note.created_at.desc())
-            .limit(20)
-        )
-        notes = list(notes_result.scalars().all())
+    user = result.data[0]
 
-        if not notes:
-            await message.answer("Заметок пока нет. Отправьте голосовое или текст!")
-            return
+    # Get all notes
+    notes_result = supabase.table("tr_notes").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20).execute()
+    notes = notes_result.data
 
-        lines = ["*Ваши заметки:*\n"]
+    if not notes:
+        await message.answer("No notes yet. Send a voice or text message!")
+        return
 
-        for n in notes:
-            date_str = n.created_at.strftime("%d.%m.%Y")
-            title = n.title if n.title else n.content[:50] + "..."
-            lines.append(f"*{title}*")
-            lines.append(f"   {date_str}\n")
+    lines = ["*Your notes:*\n"]
 
-        await message.answer("\n".join(lines), parse_mode="Markdown")
+    for n in notes:
+        date_str = n["created_at"][:10]  # YYYY-MM-DD
+        title = n.get("title") or (n["content"][:50] + "..." if len(n["content"]) > 50 else n["content"])
+        lines.append(f"*{title}*")
+        lines.append(f"   {date_str}\n")
+
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 async def process_note(message: Message, text: str, user_id: int, state: FSMContext, voice_file_id: str = None, voice_duration: int = None):
@@ -96,70 +85,61 @@ async def process_note(message: Message, text: str, user_id: int, state: FSMCont
         await message.answer(f"Error processing note: {str(e)}")
         return
 
-    # Get user and projects
-    async with get_session() as db:
-        user_result = await db.execute(
-            select(User).where(User.telegram_id == user_id)
-        )
-        user = user_result.scalar()
+    # Get user
+    user_result = supabase.table("tr_users").select("*").eq("telegram_id", user_id).execute()
 
-        if not user:
-            await message.answer("Please start the bot with /start first.")
-            return
+    if not user_result.data:
+        await message.answer("Please start the bot with /start first.")
+        return
 
-        projects = await get_user_projects(db, user.id)
-        default_project = next((p for p in projects if p.is_default), None)
+    user = user_result.data[0]
+    projects = get_user_projects(user["id"])
+    default_project = next((p for p in projects if p.get("is_default")), None)
 
-        # Detect project from content
-        content = result.get("content", text)
-        project = detect_project(content, projects) or default_project
+    # Detect project from content
+    content = result.get("content", text)
+    project = detect_project(content, projects) or default_project
 
-        # Create note
-        note = Note(
-            user_id=user.id,
-            project_id=project.id if project else None,
-            title=result.get("title"),
-            content=content,
-            tags=", ".join(result.get("tags", [])),
-            raw_transcript=text,
-            voice_file_id=voice_file_id,
-            voice_duration=voice_duration
-        )
-        db.add(note)
-        await db.commit()
-        await db.refresh(note)
+    # Create note
+    note_data = {
+        "user_id": user["id"],
+        "project_id": project["id"] if project else None,
+        "title": result.get("title"),
+        "content": content,
+        "tags": ", ".join(result.get("tags", [])),
+        "raw_transcript": text,
+        "voice_file_id": voice_file_id,
+        "voice_duration": voice_duration
+    }
+    note_result = supabase.table("tr_notes").insert(note_data).execute()
+    note = note_result.data[0]
 
-        # Format response
-        tags = result.get("tags", [])
-        tags_str = " ".join(f"#{tag}" for tag in tags) if tags else "No tags"
-        project_name = project.name if project else "Inbox"
+    # Format response
+    tags = result.get("tags", [])
+    tags_str = " ".join(f"#{tag}" for tag in tags) if tags else "No tags"
+    project_name = project["name"] if project else "Inbox"
 
-        response = (
-            f"📝 *Note saved*\n\n"
-            f"{content}\n\n"
-            f"🏷 Tags: {tags_str}\n"
-            f"📁 Project: {project_name}"
-        )
+    response = (
+        f"*Note saved*\n\n"
+        f"{content}\n\n"
+        f"Tags: {tags_str}\n"
+        f"Project: {project_name}"
+    )
 
-        await state.clear()
-        await message.answer(
-            response,
-            reply_markup=note_actions_keyboard(note.id, has_voice=bool(voice_file_id))
-        )
+    await state.clear()
+    await message.answer(
+        response,
+        reply_markup=note_actions_keyboard(note["id"], has_voice=bool(voice_file_id))
+    )
 
 
-async def get_note(note_id: int) -> Note | None:
+async def get_note(note_id: int) -> dict | None:
     """Get note by ID."""
-    async with get_session() as db:
-        return await db.get(Note, note_id)
+    result = supabase.table("tr_notes").select("*").eq("id", note_id).execute()
+    return result.data[0] if result.data else None
 
 
 async def delete_note(note_id: int) -> bool:
     """Delete note by ID."""
-    async with get_session() as db:
-        note = await db.get(Note, note_id)
-        if note:
-            await db.delete(note)
-            await db.commit()
-            return True
-    return False
+    result = supabase.table("tr_notes").delete().eq("id", note_id).execute()
+    return len(result.data) > 0 if result.data else False
